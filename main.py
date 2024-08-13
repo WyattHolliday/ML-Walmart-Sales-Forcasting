@@ -18,18 +18,12 @@ def load_data():
     traindata['Date'] = pd.to_datetime(traindata['Date'], format='%d-%m-%Y', dayfirst=True)
 
     # One-hot encode the month, day and store columns
-    # year_dummies = pd.get_dummies(traindata['Date'].dt.year, prefix='Is_Year')
     month_dummies = pd.get_dummies(traindata['Date'].dt.month, prefix='Is_Month')
     day_dummies = pd.get_dummies(traindata['Date'].dt.day, prefix='Is_Day')
     store_dummies = pd.get_dummies(traindata['Store'], prefix='Is_Store')
 
     # Concatenate the dummy columns with the original DataFrame
     traindata = pd.concat([traindata, month_dummies, day_dummies, store_dummies], axis=1)
-
-    # Add lagged sales as features
-    # for lag in [1,2,3,4,5]:
-    #     traindata[f'Weekly_Sales_Lag_{lag}'] = traindata.groupby('Store')['Weekly_Sales'].shift(lag)
-    # traindata.dropna(inplace=True)  # Remove rows with NaN values after shifting
 
     # Drop the engineered columns
     traindata = traindata.drop(columns=['Date', 'Store'])
@@ -55,7 +49,7 @@ def load_data():
 
     return train_X, train_y , test_X, test_y
 
-def k_fold_cross_validation(k, X, y, func):
+def k_fold_cross_validation(k, X, y, func, batch_size=512, lr=0.01, weight_decay=1e-5):
     print(f'Performing {k}-fold cross validation...')
     kf = KFold(n_splits=k)
     lowest_val_mae = np.inf
@@ -71,7 +65,7 @@ def k_fold_cross_validation(k, X, y, func):
         train_y, val_y = y[train_index], y[val_index]
 
         # Train the model
-        train_mae, val_mae, val_mape, model = func(train_X, train_y, val_X=val_X, val_y=val_y, k_fold=True)
+        train_mae, val_mae, val_mape, model = func(train_X, train_y, val_X=val_X, val_y=val_y, k_fold=True, lr=lr, weight_decay=weight_decay, batch_size=batch_size)
         print(f'Fold {fold} model at lowest val, Train MAE: {int(train_mae)}, Val MAE: {int(val_mae)}, Val MAPE: {val_mape}%')
 
         # Save the model with the lowest validation MAE
@@ -89,7 +83,8 @@ def k_fold_cross_validation(k, X, y, func):
 
     return final_model
 
-def train_nn(X, y, model=None, epochs=15000, batch_size=256, test_size=0.2, val_X=None, val_y=None, deterministic=True, k_fold=False):
+def train_nn(X, y, model=None, epochs=15000, batch_size=512, test_size=0.2, val_X=None, val_y=None, deterministic=True, k_fold=False, lr=0.01, weight_decay=1e-5):
+    # print(f'Training Neural Network for {epochs} epochs with batch size {batch_size}...')
     if val_X is None and val_y is None: # if no validation set is provided, split the data
         if deterministic:
             train_X, val_X, train_y, val_y = train_test_split(X, y, test_size=test_size, random_state=42)
@@ -100,7 +95,7 @@ def train_nn(X, y, model=None, epochs=15000, batch_size=256, test_size=0.2, val_
         train_X, train_y = X, y
     
     if model is None:
-        model = NeuralNet()
+        model = NeuralNet(lr=lr, weight_decay=weight_decay)
 
     train_dataset = TensorDataset(torch.tensor(train_X, dtype=torch.float32), torch.tensor(train_y, dtype=torch.float32))
     val_dataset = TensorDataset(torch.tensor(val_X, dtype=torch.float32), torch.tensor(val_y, dtype=torch.float32))
@@ -113,6 +108,8 @@ def train_nn(X, y, model=None, epochs=15000, batch_size=256, test_size=0.2, val_
     best_val_mae = np.inf
     best_val_mape = -1
     train_mae_for_best = -1
+    patience = 0
+    max_patience = 500
 
     losses = []
     train_maes = []
@@ -168,6 +165,13 @@ def train_nn(X, y, model=None, epochs=15000, batch_size=256, test_size=0.2, val_
             train_mae_for_best = train_mae
             best_model = model
             best_epoch = epoch+1
+            patience = 0
+        else: # Early stopping if validation MAE does not improve
+            patience += 1
+            if patience > max_patience:
+                if not k_fold:
+                    print('Early stopping...')
+                break
     
     if not k_fold:
         print(f'-- Training time: {((timeit.default_timer() - start_time) / 60):.2f} minutes, seconds per epoch: {(timeit.default_timer() - start_time) / epochs:.2f}')
@@ -200,7 +204,7 @@ def test_nn(X, y, model):
     return test_mae
 
 class NeuralNet(nn.Module):
-    def __init__(self):
+    def __init__(self, lr=0.01, weight_decay=1e-5):
         super(NeuralNet, self).__init__()
         self.fc1 = nn.Linear(93, 256)
         self.fc1_drop = nn.Dropout(0.5)
@@ -214,7 +218,7 @@ class NeuralNet(nn.Module):
 
         self.fc4 = nn.Linear(32, 1)
 
-        self.optimizer = optim.Adam(self.parameters(), lr=0.001, weight_decay=1e-4)
+        self.optimizer = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
         self.loss_fn = nn.MSELoss()
 
     def forward(self, x):
@@ -247,11 +251,19 @@ def plot(data1, title, xlabel, ylabel, data2=None, label1=None, label2=None):
 
 def main():
     train_X, train_y, test_X, test_y = load_data()
-    model = NeuralNet()
+    # model = NeuralNet()
     # model.load_state_dict(torch.load('models/trained_model.pth'))
-    # train_mae, val_mae, val_mape, model = train_nn(train_X, train_y, epochs=15000, model=model)
-    model = k_fold_cross_validation(5, train_X, train_y, train_nn)
-    test_mae = test_nn(test_X, test_y, model)
+    # train_mae, val_mae, val_mape, model = train_nn(train_X, train_y, epochs=15000)
+    lrs = [0.01, 0.001, 0.0001]
+    weight_decays = [1e-4, 1e-5]
+    batch_sizes = [128, 256, 512]
+    for lr in lrs:
+        for weight_decay in weight_decays:
+            for batch_size in batch_sizes:
+                model = k_fold_cross_validation(5, train_X, train_y, train_nn, batch_size=batch_size, lr=lr, weight_decay=weight_decay)
+                test_mae = test_nn(test_X, test_y, model)
+
+    # test_mae = test_nn(test_X, test_y, model)
 
 if __name__ == '__main__':
     main()
