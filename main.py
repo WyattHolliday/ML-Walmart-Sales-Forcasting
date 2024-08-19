@@ -9,7 +9,7 @@ import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold, train_test_split
 from sklearn.ensemble import RandomForestRegressor
-from tqdm import tqdm
+import joblib
 import timeit
 
 def load_data():
@@ -66,7 +66,8 @@ def k_fold_cross_validation(k, X, y, func, params=None):
 
         # Train the model
         train_mae, val_mae, val_mape, model = func(train_X, train_y, val_X=val_X, val_y=val_y, k_fold=True, params=params)
-        # print(f'Fold {fold} model at lowest val, Train MAE: {int(train_mae)}, Val MAE: {int(val_mae)}, Val MAPE: {val_mape}%')
+        if isinstance(model, NeuralNet):
+            print(f'Fold {fold} model at lowest val, Train MAE: {int(train_mae)}, Val MAE: {int(val_mae)}, Val MAPE: {val_mape}%')
 
         # Save the model with the lowest validation MAE
         if val_mae < lowest_val_mae:
@@ -79,7 +80,7 @@ def k_fold_cross_validation(k, X, y, func, params=None):
 
         fold += 1
     
-    if round(np.mean(val_mapes), 2) <= 7:
+    if isinstance(model, RandomForestRegressor) and round(np.mean(val_mapes), 2) <= 7:
         max_depth = params["max_depth"]
         min_split = params["min_split"]
         min_leaf = params["min_leaf"]
@@ -88,11 +89,13 @@ def k_fold_cross_validation(k, X, y, func, params=None):
         print(f'Random Forest, Max Depth: {max_depth}, Min Split: {min_split}, Min Leaf: {min_leaf}, Max Features: {max_feature}, Max Leaf: {max_leaf}')
         print(f'Average Train MAE: {int(np.mean(train_maes))}, Average Val MAE: {int(np.mean(val_maes))}, Average Val MAPE: {round(np.mean(val_mapes), 2)}%, MAE difference: {int(np.mean(val_maes)) - int(np.mean(train_maes))}')
         print()
+        joblib.dump(model, 'models/random_forest_model.pkl')
+    elif isinstance(model, NeuralNet):
+        print(f'Average Train MAE: {int(np.mean(train_maes))}, Average Val MAE: {int(np.mean(val_maes))}, Average Val MAPE: {round(np.mean(val_mapes), 2)}%, MAE difference: {int(np.mean(val_maes)) - int(np.mean(train_maes))}')
 
     return final_model
 
-def train_nn(X, y, model=None, epochs=15000, batch_size=512, test_size=0.2, val_X=None, val_y=None, deterministic=True, k_fold=False, params=None):
-    # print(f'Training Neural Network for {epochs} epochs with batch size {batch_size}...')
+def train_nn(X, y, model=None, epochs=15000, test_size=0.2, val_X=None, val_y=None, deterministic=True, k_fold=False, params=None):
     if val_X is None and val_y is None: # if no validation set is provided, split the data
         if deterministic:
             train_X, val_X, train_y, val_y = train_test_split(X, y, test_size=test_size, random_state=42)
@@ -104,8 +107,10 @@ def train_nn(X, y, model=None, epochs=15000, batch_size=512, test_size=0.2, val_
 
     if params is None:
         params = {
+            "batch_size": 512,
             "lr": 0.01,
-            "weight_decay": 1e-5
+            "weight_decay": 1e-5,
+            "max_patience": 500
         }
     
     if model is None:
@@ -114,8 +119,8 @@ def train_nn(X, y, model=None, epochs=15000, batch_size=512, test_size=0.2, val_
     train_dataset = TensorDataset(torch.tensor(train_X, dtype=torch.float32), torch.tensor(train_y, dtype=torch.float32))
     val_dataset = TensorDataset(torch.tensor(val_X, dtype=torch.float32), torch.tensor(val_y, dtype=torch.float32))
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=params["batch_size"], shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=params["batch_size"], shuffle=False)
 
     best_model = None
     best_epoch = -1
@@ -123,7 +128,7 @@ def train_nn(X, y, model=None, epochs=15000, batch_size=512, test_size=0.2, val_
     best_val_mape = -1
     train_mae_for_best = -1
     patience = 0
-    max_patience = 500
+    max_patience = params["max_patience"]
 
     losses = []
     train_maes = []
@@ -189,7 +194,7 @@ def train_nn(X, y, model=None, epochs=15000, batch_size=512, test_size=0.2, val_
     
     if not k_fold:
         print(f'-- Training time: {((timeit.default_timer() - start_time) / 60):.2f} minutes, seconds per epoch: {(timeit.default_timer() - start_time) / epochs:.2f}')
-        torch.save(model.state_dict(), 'models/trained_model.pth')
+        torch.save(model.state_dict(), 'models/trained_nn.pth')
         print(f"Best model, Epoch: {best_epoch}, Train MAE: {int(train_mae_for_best)}, Val MAE: {int(best_val_mae)}, Val MAPE: {best_val_mape}%")
         plot(train_maes, 'Error', 'Epoch', 'Mean Absolute Error', val_maes, 'Train', 'Validation')
         plot(losses, 'Training Loss', 'Epoch', 'Loss')
@@ -198,7 +203,7 @@ def train_nn(X, y, model=None, epochs=15000, batch_size=512, test_size=0.2, val_
 
 def test_nn(X, y, model):
     test_dataset = TensorDataset(torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.float32))
-    test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False)
 
     model.eval()
     test_predictions = []
@@ -253,51 +258,78 @@ class NeuralNet(nn.Module):
         return x
 
 def random_forest(X, y, test_size=0.2, val_X=None, val_y=None, k_fold=False, params=None):
-    if val_X is None and val_y is None:
+    if val_X is None and val_y is None: # if no validation set is provided, split the data
         train_X, val_X, train_y, val_y = train_test_split(X, y, test_size=test_size, random_state=42)
     else:
         train_X, train_y = X, y
 
     if params is None:
         params = {
-            "max_depth": 10,
-            "min_split": 2,
-            "min_leaf": 1,
-            "max_features": 'sqrt',
-            "max_leaf": None
+            "max_depth": 70,
+            "min_split": 12,
+            "min_leaf": 2,
+            "max_features": 0.65,
+            "max_leaf": 1000,
+            "random_state": 42
         }
 
     model = RandomForestRegressor(
         n_estimators=100,      # Number of boosting stages
         max_depth=params["max_depth"],           # Maximum depth of individual trees
         min_samples_split=params["min_split"],   # Minimum number of samples required to split an internal node
-        min_samples_leaf=params["min_leaf"],    # Minimum number of samples required to be at a leaf node
-        max_features=params["max_features"],   # Number of features to consider when looking for the best split
-        max_leaf_nodes=params["max_leaf"],   # Grow trees with max_leaf_nodes in best-first fashion
-        random_state=42
+        min_samples_leaf=params["min_leaf"],     # Minimum number of samples required to be at a leaf node
+        max_features=params["max_features"],     # Number of features to consider when looking for the best split
+        max_leaf_nodes=params["max_leaf"],       # Grow trees with max_leaf_nodes in best-first fashion
+        random_state=params["random_state"]
     )
     model.fit(train_X, train_y)
 
     train_predictions = model.predict(train_X)
     val_predictions = model.predict(val_X)
 
+    # Calculate the mean absolute error (MAE) and mean absolute percentage error (MAPE)
     train_mae = np.mean(np.abs(train_predictions - train_y))
     val_mae = np.mean(np.abs(val_predictions - val_y))
     val_mape = round(np.mean(np.abs(val_predictions - val_y) / val_y) * 100, 2)
 
     if k_fold == False:
-        print(f'Gradient Boosting')
         print(f'Train MAE: {int(train_mae)}, Val MAE: {int(val_mae)}, Val MAPE: {val_mape}%')
     
     return train_mae, val_mae, val_mape, model
 
-def test_RF(model, test_X, test_y):
+def test_RF(model, test_X, test_y): # Predict data then calc errors
     test_predictions = model.predict(test_X)
     test_mae = np.mean(np.abs(test_predictions - test_y))
     test_mape = round(np.mean(np.abs(test_predictions - test_y) / test_y) * 100, 2)
     print(f'Test Random Forest MAE: {int(test_mae)}, MAPE: {test_mape}%')
     print()
     return test_mae
+
+def ensemble(models, X, y):
+    ensemble_predictions = np.zeros(len(y))
+    
+    for model, weight in models:  # for each model, predict the output and multiply by the weight
+        if isinstance(model, RandomForestRegressor):
+            ensemble_predictions += model.predict(X) * weight
+        else:  # if model is a neural network
+            dataset = TensorDataset(torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.float32))
+            loader = DataLoader(dataset, batch_size=256, shuffle=False)
+            model.eval()
+            with torch.no_grad():
+                predictions = []
+                for batch_X, _ in loader:
+                    preds = model(batch_X).squeeze().numpy()
+                    predictions.append(preds)
+                
+                # Convert predictions to numpy array and weight them
+                predictions = np.concatenate(predictions) * weight
+                ensemble_predictions += predictions
+                
+    # Calculate the mean absolute error (MAE) and mean absolute percentage error (MAPE)
+    ensemble_mae = np.mean(np.abs(ensemble_predictions - y))
+    ensemble_mape = np.mean(np.abs(ensemble_predictions - y) / y) * 100
+    print(f'Ensemble MAE: {int(ensemble_mae)}, MAPE: {ensemble_mape}%')
+    return ensemble_mae
 
 def plot(data1, title, xlabel, ylabel, data2=None, label1=None, label2=None):
     if data2 is not None and label1 is not None and label2 is not None:
@@ -312,64 +344,35 @@ def plot(data1, title, xlabel, ylabel, data2=None, label1=None, label2=None):
 
 def main():
     train_X, train_y, test_X, test_y = load_data()
-    # model = NeuralNet()
-    # model.load_state_dict(torch.load('models/trained_model.pth'))
-    # train_mae, val_mae, val_mape, model = train_nn(train_X, train_y, epochs=15000)
+    nn_model = NeuralNet()
+    nn_model.load_state_dict(torch.load('models/trained_nn.pth'))
 
-    # max_depth=params["max_depth"]
-    # min_samples_split=params["min_split"]
-    # min_samples_leaf=params["min_leaf"]
-    # max_features=params["max_features"]
-    # max_leaf_nodes=params["max_leaf"]
+    # nn_model = k_fold_cross_validation(5, train_X, train_y, train_nn)
+    for j in range(10):
+        rf_params = {
+            "max_depth": 70,
+            "min_split": 12,
+            "min_leaf": 2,
+            "max_features": 0.65,
+            "max_leaf": 1000,
+            "random_state": None
+        }
+        rf_model = k_fold_cross_validation(5, train_X, train_y, random_forest, params=rf_params)
+        # rf_model = joblib.load("random_forest_model.pkl")
+        test_nn(test_X, test_y, nn_model)
 
-    # params = {}
-    # max_depths = [93, 70, 50, 30]
-    # min_splits = [2, 5, 10, 15]
-    # min_leafs = [1, 2, 5, 10]
-    # max_features = [1.0, 0.75, 0.5, 0.25]
-    # max_leafs = [None, 1000, 500, 100]
+        # for i in range(0, 11):
+        #     print(f'Random Forest: {i/10}, Neural Network: {(10-i)/10}')
+        #     ensemble([(rf_model, i/10), (nn_model, (10-i)/10)], test_X, test_y)
+        #     print()
 
-    # for max_depth in max_depths:
-    #     for min_split in min_splits:
-    #         for min_leaf in min_leafs:
-    #             for max_feature in max_features:
-    #                 for max_leaf in max_leafs:
-    #                     params["max_depth"] = max_depth
-    #                     params["min_split"] = min_split
-    #                     params["min_leaf"] = min_leaf
-    #                     params["max_features"] = max_feature
-    #                     params["max_leaf"] = max_leaf
-    #                     k_fold_cross_validation(5, train_X, train_y, random_forest, params=params)
-
-    # params = {}
-    # max_depths = [40, 50, 60, 70, 80, 93]
-    # min_splits = [6, 8, 10, 12, 14]
-    # min_leafs = [2, 3, 4]
-    # max_features = [0.65, 0.75, 0.85]
-    # max_leafs = [None, 1000]
-    # for max_depth in max_depths:
-    #     for min_split in min_splits:
-    #         for min_leaf in min_leafs:
-    #             for max_feature in max_features:
-    #                 for max_leaf in max_leafs:
-    #                     params["max_depth"] = max_depth
-    #                     params["min_split"] = min_split
-    #                     params["min_leaf"] = min_leaf
-    #                     params["max_features"] = max_feature
-    #                     params["max_leaf"] = max_leaf
-    #                     k_fold_cross_validation(5, train_X, train_y, random_forest, params=params)
+        weights = [0, .05, .1, .15, .2, .25]
+        for weight in weights:
+            print(f'Random Forest: {weight}, Neural Network: {1-weight}')
+            ensemble([(rf_model, weight), (nn_model, 1-weight)], test_X, test_y)
+            print()
     
-    # model = k_fold_cross_validation(5, train_X, train_y, random_forest)
-
-    # test_mae = test_nn(test_X, test_y, model)
-    rf_params = {
-        "max_depth": 70,
-        "min_split": 12,
-        "min_leaf": 2,
-        "max_features": 0.65,
-        "max_leaf": 1000
-    }
-    rf_model = k_fold_cross_validation(5, train_X, train_y, random_forest, params=rf_params)
+    ensemble_model_weights = [(rf_model, 0.1), (nn_model, 0.9)]
 
 if __name__ == '__main__':
     main()
