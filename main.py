@@ -90,14 +90,14 @@ def k_fold_cross_validation(k, X, y, func, params=None):
         print(f'Random Forest, Max Depth: {max_depth}, Min Split: {min_split}, Min Leaf: {min_leaf}, Max Features: {max_feature}, Max Leaf: {max_leaf}')
         print(f'Average Train MAE: {int(np.mean(train_maes))}, Average Val MAE: {int(np.mean(val_maes))}, Average Val MAPE: {round(np.mean(val_mapes), 2)}%, MAE difference: {int(np.mean(val_maes)) - int(np.mean(train_maes))}')
         print()
-        joblib.dump(model, 'models/random_forest_model.pkl')
+        joblib.dump(model, 'models/trained_random_forest.pkl')
     elif isinstance(model, NeuralNet):
         print(f'Average Train MAE: {int(np.mean(train_maes))}, Average Val MAE: {int(np.mean(val_maes))}, Average Val MAPE: {round(np.mean(val_mapes), 2)}%, MAE difference: {int(np.mean(val_maes)) - int(np.mean(train_maes))}')
     elif isinstance(model, SVR) and round(np.mean(val_mapes), 2) <= 7:
         print(f'SVR, kernel: {params["kernel"]} C: {params["C"]} gamma: {params["gamma"]} coef0: {params["coef0"]} degree: {params["degree"]}')
         print(f'Average Train MAE: {int(np.mean(train_maes))}, Average Val MAE: {int(np.mean(val_maes))}, Average Val MAPE: {round(np.mean(val_mapes), 2)}%, MAE difference: {int(np.mean(val_maes)) - int(np.mean(train_maes))}')
         print()
-        joblib.dump(model, 'models/svr_model.pkl')
+        joblib.dump(model, 'models/trained_svr.pkl')
 
     return final_model
 
@@ -301,15 +301,15 @@ def random_forest(X, y, test_size=0.2, val_X=None, val_y=None, k_fold=False, par
 
     if k_fold == False:
         print(f'Train MAE: {int(train_mae)}, Val MAE: {int(val_mae)}, Val MAPE: {val_mape}%')
+        joblib.dump(model, 'models/trained_random_forest.pkl')
     
     return train_mae, val_mae, val_mape, model
 
-def test_RF(model, test_X, test_y): # Predict data then calc errors
+def test_sklearn_model(model, test_X, test_y): # Predict data then calc errors
     test_predictions = model.predict(test_X)
     test_mae = np.mean(np.abs(test_predictions - test_y))
     test_mape = round(np.mean(np.abs(test_predictions - test_y) / test_y) * 100, 2)
-    print(f'Test Random Forest MAE: {int(test_mae)}, MAPE: {test_mape}%')
-    print()
+    print(f'Test {model.__class__.__name__} MAE: {int(test_mae)}, MAPE: {test_mape}%\n')
     return test_mae
 
 def support_vector_regression(X, y, test_size=0.2, val_X=None, val_y=None, k_fold=False, params=None):
@@ -350,16 +350,23 @@ def support_vector_regression(X, y, test_size=0.2, val_X=None, val_y=None, k_fol
 
     if k_fold == False:
         print(f'Train MAE: {int(train_mae)}, Val MAE: {int(val_mae)}, Val MAPE: {val_mape}%')
+        joblib.dump(model, 'models/trained_svr.pkl')
     
     return train_mae, val_mae, val_mape, model
 
 def ensemble(models, X, y):
     ensemble_predictions = np.zeros(len(y))
+
+    if sum([weight for _, weight in models]) != 1: # Weights should sum to 1
+        print(f'ERROR: Weights in {models} do not sum to 1\n')
+        return
     
     for model, weight in models:  # for each model, predict the output and multiply by the weight
-        if isinstance(model, RandomForestRegressor):
+        if isinstance(model, RandomForestRegressor) or isinstance(model, SVR):  # if model comes from sklearn
             ensemble_predictions += model.predict(X) * weight
-        else:  # if model is a neural network
+            print(f'{model.__class__.__name__} MAPE: {round(np.mean(np.abs(model.predict(X) - y) / y) * 100, 2)}')
+            
+        elif isinstance(model, NeuralNet):  # if model is a torch model
             dataset = TensorDataset(torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.float32))
             loader = DataLoader(dataset, batch_size=256, shuffle=False)
             model.eval()
@@ -368,7 +375,8 @@ def ensemble(models, X, y):
                 for batch_X, _ in loader:
                     preds = model(batch_X).squeeze().numpy()
                     predictions.append(preds)
-                
+                print(f'NueralNet MAPE: {round(np.mean(np.abs(np.concatenate(predictions) - y) / y) * 100, 2)}')
+
                 # Convert predictions to numpy array and weight them
                 predictions = np.concatenate(predictions) * weight
                 ensemble_predictions += predictions
@@ -376,7 +384,7 @@ def ensemble(models, X, y):
     # Calculate the mean absolute error (MAE) and mean absolute percentage error (MAPE)
     ensemble_mae = np.mean(np.abs(ensemble_predictions - y))
     ensemble_mape = round(np.mean(np.abs(ensemble_predictions - y) / y) * 100, 2)
-    print(f'Ensemble MAE: {int(ensemble_mae)}, MAPE: {ensemble_mape}%')
+    print(f'Ensemble MAE: {int(ensemble_mae)}, MAPE: {ensemble_mape}%\n')
     return ensemble_mae
 
 def plot(data1, title, xlabel, ylabel, data2=None, label1=None, label2=None):
@@ -392,86 +400,35 @@ def plot(data1, title, xlabel, ylabel, data2=None, label1=None, label2=None):
 
 def main():
     train_X, train_y, test_X, test_y = load_data()
-    # nn_model = NeuralNet()
-    # nn_model.load_state_dict(torch.load('models/trained_nn.pth'))
-    # rf_model = joblib.load("random_forest_model.pkl")
-    # ensemble_model_weights = [(rf_model, 0.1), (nn_model, 0.9)]
 
-    # params = {
-    #     "kernel": 'poly',
-    #     "C": 1000000.0,
-    #     "gamma": 0.15,
-    #     "coef0": 1.0,
-    #     "degree": 2
-    # }
-    # support_vector_regression(train_X, train_y, test_size=0.2, val_X=None, val_y=None, k_fold=False, params=params)
-    # k_fold_cross_validation(5, train_X, train_y, func=support_vector_regression, params=params)
-    # quit()
+    nn_model = NeuralNet()
+    nn_model.load_state_dict(torch.load('models/nn_model.pth'))
+    rf_model = joblib.load("models/random_forest_model.pkl")
+    svr_model = joblib.load("models/svr_model.pkl")
 
-    params = {} # for poly kernel
-    # Cs = [1e5, 1e6, 1e7]
-    # gammas = [0.1, 0.2, 0.4]
-    # coef0s = [1.0, 3.0, 5.0]
-    # degrees = [2, 3, 4]
+    svr_weights = [0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18, 0.19, 0.2]
+    rf_weights = [0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1]
 
-    """
-    SVR, kernel: poly C: 100000.0 gamma: 0.1 coef0: 2.25 degree: 3
-    Average Train MAE: 31452, Average Val MAE: 50647, Average Val MAPE: 5.52%, MAE difference: 19195
-    """
-    # params = {"kernel": "poly", "C": 100000.0, "gamma": 0.1, "coef0": 2.25, "degree": 3}
-    # k_fold_cross_validation(5, train_X, train_y, func=support_vector_regression, params=params)
+    for prop_rf_weight in rf_weights:
+        for svr_weight in svr_weights:
+            rf_weight = round((1 - svr_weight) * prop_rf_weight, 2)
+            nn_weight = round((1 - svr_weight) * (1 - prop_rf_weight), 2)
 
-    Cs = [1e5, 1e6]
-    gammas = [0.05, 0.075, 0.1, 0.125, 0.15, 0.175]
-    coef0s = [2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75]
-    degrees = [3]
+            print(f'SVR Weight: {svr_weight}, RF Weight: {rf_weight}, NN Weight: {nn_weight}')
+            ensemble_model_weights = [(svr_model, svr_weight), (rf_model, rf_weight), (nn_model, nn_weight)]
+            ensemble(ensemble_model_weights, test_X, test_y)
+            
+    final_ensemble_model_weights = [(svr_model, 0.09), (rf_model, 0.05), (nn_model, 0.86)]
+
+    # svr_weights = [0.0, 0.01, 0.02, 0.03, 0.04, 0.45, 0.05, 0.55, 0.06, 0.07, 0.08, 0.09, 0.1]
+    svr_weights = [0.4, 0.41, 0.42, 0.43, 0.44, 0.45, 0.46, 0.47, 0.48, 0.49, 0.5, 0.51, 0.52, 0.53, 0.54, 0.55, 0.56, 0.57, 0.58, 0.59, 0.6]
+    for svr_weight in svr_weights:
+        rf_weight = round(1 - svr_weight, 2)
+        print(f'SVR Weight: {svr_weight}, RF Weight: {rf_weight}')
+        ensemble_model_weights = [(svr_model, svr_weight), (rf_model, rf_weight)]
+        ensemble(ensemble_model_weights, test_X, test_y)
     
-    # params["kernel"] = 'rbf'
-    # print("---------------------RBF Kernel---------------------")
-    # params["coef0"] = None
-    # params["degree"] = None
-    # for Ci in Cs:
-    #     for gamma in gammas:
-    #         params["C"] = Ci
-    #         params["gamma"] = gamma
-    #         k_fold_cross_validation(5, train_X, train_y, func=support_vector_regression, params=params)
-    #         print()
-            
-    # params["kernel"] = 'linear'
-    # print("---------------------Linear Kernel---------------------")
-    # params["gamma"] = None
-    # params["coef0"] = None
-    # params["degree"] = None
-    # for Ci in Cs:
-    #         params["C"] = Ci
-    #         k_fold_cross_validation(5, train_X, train_y, func=support_vector_regression, params=params)
-    #         print()
-            
-    params["kernel"] = 'poly'
-    print("---------------------Polynomial Kernel---------------------\n")
-    for Ci in Cs:
-        print(f"---- New C: {Ci:.0e} ----\n")
-        for gamma in gammas:
-            for coef0 in coef0s:
-                for degree in degrees:
-                    params["C"] = Ci
-                    params["gamma"] = gamma
-                    params["coef0"] = coef0
-                    params["degree"] = degree
-                    if not (Ci > 1e5 and gamma > 0.1):
-                        k_fold_cross_validation(5, train_X, train_y, func=support_vector_regression, params=params)
-            
-    # params["kernel"] = 'sigmoid'
-    # print("---------------------Sigmoid Kernel---------------------")
-    # params["degree"] = None
-    # for Ci in Cs:
-    #     print(f"---- New C: {Ci:.0e} ----\n")
-    #     for gamma in gammas:
-    #         for coef0 in coef0s:
-    #             params["C"] = Ci
-    #             params["gamma"] = gamma
-    #             params["coef0"] = coef0
-    #             k_fold_cross_validation(5, train_X, train_y, func=support_vector_regression, params=params)
+    svr_rf_ensemble_model_weights = [(svr_model, 0.5), (rf_model, 0.5)]
 
 if __name__ == '__main__':
     main()
