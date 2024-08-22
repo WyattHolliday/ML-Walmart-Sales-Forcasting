@@ -272,21 +272,21 @@ def random_forest(X, y, test_size=0.2, val_X=None, val_y=None, k_fold=False, par
     # Default to tuned parameters
     if params is None:
         params = {
-            "max_depth": 70,
-            "min_split": 12,
-            "min_leaf": 2,
-            "max_features": 0.65,
-            "max_leaf": 1000,
-            "random_state": 42
+            "max_depth": 70,        # Maximum depth of individual trees
+            "min_split": 12,        # Minimum number of samples required to split an internal node
+            "min_leaf": 2,          # Minimum number of samples required to be at a leaf node
+            "max_features": 0.65,   # Number of features to consider when looking for the best split
+            "max_leaf": 1000,       # Grow trees with max_leaf_nodes in best-first fashion
+            "random_state": 42      # None if random, otherwise deterministic
         }
 
     model = RandomForestRegressor(
-        n_estimators=100,      # Number of boosting stages
-        max_depth=params["max_depth"],           # Maximum depth of individual trees
-        min_samples_split=params["min_split"],   # Minimum number of samples required to split an internal node
-        min_samples_leaf=params["min_leaf"],     # Minimum number of samples required to be at a leaf node
-        max_features=params["max_features"],     # Number of features to consider when looking for the best split
-        max_leaf_nodes=params["max_leaf"],       # Grow trees with max_leaf_nodes in best-first fashion
+        n_estimators=100,
+        max_depth=params["max_depth"],
+        min_samples_split=params["min_split"],
+        min_samples_leaf=params["min_leaf"],
+        max_features=params["max_features"],
+        max_leaf_nodes=params["max_leaf"],
         random_state=params["random_state"]
     )
     model.fit(train_X, train_y)
@@ -322,10 +322,10 @@ def support_vector_regression(X, y, test_size=0.2, val_X=None, val_y=None, k_fol
     if params == None:
         params = {
             "kernel": 'poly',
-            "C": 1e5,
-            "gamma": 0.1,
-            "coef0": 2.25,
-            "degree": 3
+            "C": 1e5,           # Regularization parameter
+            "gamma": 0.1,       # Kernel coefficient for 'rbf', 'poly' and 'sigmoid'
+            "coef0": 2.25,      # Independent term in kernel function for 'poly' and 'sigmoid'
+            "degree": 3         # Degree of the polynomial kernel function for 'poly'
         }
     
     # Make and train model
@@ -357,14 +357,17 @@ def support_vector_regression(X, y, test_size=0.2, val_X=None, val_y=None, k_fol
 def ensemble(models, X, y):
     ensemble_predictions = np.zeros(len(y))
 
+    # Print name of each model and its weight
+    [print(f'{model.__class__.__name__}: {weight} ', end="") for model, weight in models]
+    print()
     if sum([weight for _, weight in models]) != 1: # Weights should sum to 1
-        print(f'ERROR: Weights in {models} do not sum to 1\n')
+        print(f'ERROR: Weights do not sum to 1\n')
         return
     
     for model, weight in models:  # for each model, predict the output and multiply by the weight
         if isinstance(model, RandomForestRegressor) or isinstance(model, SVR):  # if model comes from sklearn
             ensemble_predictions += model.predict(X) * weight
-            print(f'{model.__class__.__name__} MAPE: {round(np.mean(np.abs(model.predict(X) - y) / y) * 100, 2)}')
+            print(f'{model.__class__.__name__} MAPE: {round(np.mean(np.abs(model.predict(X) - y) / y) * 100, 2)}%')
             
         elif isinstance(model, NeuralNet):  # if model is a torch model
             dataset = TensorDataset(torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.float32))
@@ -375,7 +378,7 @@ def ensemble(models, X, y):
                 for batch_X, _ in loader:
                     preds = model(batch_X).squeeze().numpy()
                     predictions.append(preds)
-                print(f'NueralNet MAPE: {round(np.mean(np.abs(np.concatenate(predictions) - y) / y) * 100, 2)}')
+                print(f'NueralNet MAPE: {round(np.mean(np.abs(np.concatenate(predictions) - y) / y) * 100, 2)}%')
 
                 # Convert predictions to numpy array and weight them
                 predictions = np.concatenate(predictions) * weight
@@ -401,34 +404,19 @@ def plot(data1, title, xlabel, ylabel, data2=None, label1=None, label2=None):
 def main():
     train_X, train_y, test_X, test_y = load_data()
 
+    # Load trained models
     nn_model = NeuralNet()
     nn_model.load_state_dict(torch.load('models/nn_model.pth'))
     rf_model = joblib.load("models/random_forest_model.pkl")
     svr_model = joblib.load("models/svr_model.pkl")
-
-    svr_weights = [0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18, 0.19, 0.2]
-    rf_weights = [0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1]
-
-    for prop_rf_weight in rf_weights:
-        for svr_weight in svr_weights:
-            rf_weight = round((1 - svr_weight) * prop_rf_weight, 2)
-            nn_weight = round((1 - svr_weight) * (1 - prop_rf_weight), 2)
-
-            print(f'SVR Weight: {svr_weight}, RF Weight: {rf_weight}, NN Weight: {nn_weight}')
-            ensemble_model_weights = [(svr_model, svr_weight), (rf_model, rf_weight), (nn_model, nn_weight)]
-            ensemble(ensemble_model_weights, test_X, test_y)
-            
-    final_ensemble_model_weights = [(svr_model, 0.09), (rf_model, 0.05), (nn_model, 0.86)]
-
-    # svr_weights = [0.0, 0.01, 0.02, 0.03, 0.04, 0.45, 0.05, 0.55, 0.06, 0.07, 0.08, 0.09, 0.1]
-    svr_weights = [0.4, 0.41, 0.42, 0.43, 0.44, 0.45, 0.46, 0.47, 0.48, 0.49, 0.5, 0.51, 0.52, 0.53, 0.54, 0.55, 0.56, 0.57, 0.58, 0.59, 0.6]
-    for svr_weight in svr_weights:
-        rf_weight = round(1 - svr_weight, 2)
-        print(f'SVR Weight: {svr_weight}, RF Weight: {rf_weight}')
-        ensemble_model_weights = [(svr_model, svr_weight), (rf_model, rf_weight)]
-        ensemble(ensemble_model_weights, test_X, test_y)
     
+    # Run tuned full ensemble on test data
+    final_ensemble_model_weights = [(svr_model, 0.09), (rf_model, 0.05), (nn_model, 0.86)]
+    ensemble(final_ensemble_model_weights, test_X, test_y)
+
+    # Run tuned just random forest and support vector regression ensemble on test data
     svr_rf_ensemble_model_weights = [(svr_model, 0.5), (rf_model, 0.5)]
+    ensemble(svr_rf_ensemble_model_weights, test_X, test_y)
 
 if __name__ == '__main__':
     main()
